@@ -128,7 +128,6 @@ static int fw_message_process(MQTTCtx *mqttCtx, byte* buffer, word32 len)
     byte *sigBuf, *pubKeyBuf, *fwBuf;
 #ifdef ENABLE_FIRMWARE_SIG
     ecc_key eccKey;
-    char cmd[200];
 #endif
     word32 check_len = sizeof(FirmwareHeader) + header->sigLen +
         header->pubKeyLen + header->fwLen;
@@ -549,8 +548,6 @@ int fwclient_main(void)
 {
     int rc;
     MQTTCtx mqttCtx;
-
-    printf("Start fwclient\n");
 
 #if defined(DEBUG_WOLFSSL)
     printf("Debug enabled\n");

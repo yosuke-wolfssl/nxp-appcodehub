@@ -26,6 +26,11 @@
 extern "C" {
 #endif
 
+/* wolfMQTT feature toggles from Zephyr Kconfig */
+#ifdef CONFIG_WOLFMQTT_TLS
+    #define ENABLE_MQTT_TLS
+#endif
+
 
 /* ------------------------------------------------------------------------- */
 /* Platform */
@@ -56,8 +61,8 @@ extern "C" {
 #define USE_CERT_BUFFERS_2048
 #define USE_ANY_ADDR
 
-#define WOLFCRYPT_TEST
-#define WOLFCRYPT_BENCHMARK
+//#define WOLFCRYPT_TEST
+//#define WOLFCRYPT_BENCHMARK
 #define NO_MAIN_DRIVER
 
 /* ------------------------------------------------------------------------- */
@@ -292,7 +297,6 @@ extern "C" {
 //#define WOLFSSL_CERT_REQ
 //#define WOLFSSL_CERT_EXT
 //#define NO_PWDBASED
-
 
 /* Disable Algorithms */
 #define NO_DSA
