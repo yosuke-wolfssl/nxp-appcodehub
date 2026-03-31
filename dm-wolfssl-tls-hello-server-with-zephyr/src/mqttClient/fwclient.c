@@ -25,7 +25,6 @@
 #endif
 
 #include "wolfmqtt/mqtt_client.h"
-#include "target.h"
 
 /* This example only works with ENABLE_MQTT_TLS (wolfSSL library). */
 #if defined(ENABLE_MQTT_TLS)
@@ -57,6 +56,11 @@
 #include "mqttexample.h"
 #include "mqttnet.h"
 
+#if defined(WOLFMQTT_ZEPHYR)
+#include <zephyr/drivers/flash.h>
+#define SLOT1_NODE DT_NODELABEL(slot1_partition)
+#endif
+
 /* Configuration */
 #ifndef MAX_BUFFER_SIZE
 #define MAX_BUFFER_SIZE         FIRMWARE_MAX_PACKET
@@ -68,48 +72,43 @@ static int mTestDone = 0;
 static byte* mFwBuf;
 
 
-static int fwfile_save(const char* filePath, byte* fileBuf, int fileLen)
+static int fwfile_save(byte* fileBuf, int fileLen)
 {
-#if !defined(NO_FILESYSTEM)
-    int ret = 0;
-    FILE* file = NULL;
-
-    /* Check arguments */
-    if (filePath == NULL || XSTRLEN(filePath) == 0 || fileLen == 0 ||
-        fileBuf == NULL) {
-        return EXIT_FAILURE;
+    int rc = EXIT_SUCCESS;
+#if defined(WOLFMQTT_ZEPHYR)
+    if (fileBuf == NULL || fileLen <= 0) {
+        PRINTF("Invalid firmware file buffer or length!");
+        rc = EXIT_FAILURE;
     }
 
-    /* Open file */
-    file = fopen(filePath, "wb");
-    if (file == NULL) {
-        PRINTF("File %s write error!", filePath);
-        ret = EXIT_FAILURE;
-        goto exit;
+    const struct device* flash_dev = DEVICE_DT_GET(DT_MTD_FROM_FIXED_PARTITION(SLOT1_NODE));
+    if (!device_is_ready(flash_dev)) {
+        PRINTF("Flash device not ready!");
+        rc = EXIT_FAILURE;
     }
 
-    /* Save file */
-    ret = (int)fwrite(fileBuf, 1, fileLen, file);
-    if (ret != fileLen) {
-        PRINTF("Error reading file! %d", ret);
-        ret = EXIT_FAILURE;
-        goto exit;
+    if (rc == EXIT_SUCCESS) {
+        /* Erase flash before writing */
+        rc = flash_erase(flash_dev, 0, fileLen);
+        if (rc != 0) {
+            PRINTF("Flash erase failed! %d", rc);
+        }
     }
 
-    PRINTF("Saved %d bytes to %s", fileLen, filePath);
-
-exit:
-    if (file) {
-        fclose(file);
+    if (rc == EXIT_SUCCESS) {
+        /* Write firmware file to flash */
+        rc = flash_write(flash_dev, 0, fileBuf, fileLen);
+        if (rc != 0) {
+            PRINTF("Flash write failed! %d", rc);
+        }
     }
-    return ret;
 
-#else
-    (void)filePath;
-    (void)fileBuf;
-    PRINTF("Firmware File Save: Len=%d (No Filesystem)", fileLen);
-    return fileLen;
+    if (rc == EXIT_SUCCESS) {
+        PRINTF("Firmware File Saved to Flash: Len=%d", fileLen);
+    }
 #endif
+    PRINTF("Firmware File Save: Len=%d (No Filesystem)", fileLen);
+    return rc;
 }
 
 static int fw_message_process(MQTTCtx *mqttCtx, byte* buffer, word32 len)
@@ -159,10 +158,12 @@ static int fw_message_process(MQTTCtx *mqttCtx, byte* buffer, word32 len)
         (void)sigBuf;
 #endif
         if (rc == 0) {
-            /* TODO: Process firmware image */
-            /* For example, save to disk using topic name */
-            fwfile_save(mqttCtx->pub_file, fwBuf, header->fwLen);
-
+            /* Process firmware image */
+            rc = fwfile_save(fwBuf, header->fwLen);
+            if (rc == 0) {
+                mStopRead = 1;
+                PRINTF("Firmware Update Processed Successfully!");
+            }
         }
 
 #ifdef ENABLE_FIRMWARE_SIG

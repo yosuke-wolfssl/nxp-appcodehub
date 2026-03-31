@@ -22,7 +22,7 @@
 #ifndef WOLFMQTT_FWCLIENT_H
 #define WOLFMQTT_FWCLIENT_H
 
-#include "examples/mqttexample.h"
+#include "mqttexample.h"
 
 #define FIRMWARE_CLIENT_ID     "WolfMQTTFWClient"
 #define FIRMWARE_DEF_SAVE_AS    "./app/image_updated.bin"

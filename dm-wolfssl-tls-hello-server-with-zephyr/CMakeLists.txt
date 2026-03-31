@@ -22,7 +22,8 @@ target_sources(app PRIVATE src/mqttClient/mqttexample.c)
 target_sources(app PRIVATE src/mqttClient/mqttnet.c)
 target_sources(app PRIVATE src/mqttClient/mqttport.c)
 target_include_directories(app PRIVATE src/mqttClient)
-target_compile_definitions(app PRIVATE WOLFMQTT_ZEPHYR)
+# Enable wolfMQTT user settings to adjust the configuration as same as wolfSSL
+target_compile_definitions(app PRIVATE WOLFMQTT_USER_SETTINGS)
 
 add_definitions(-DWOLFSSL_USER_SETTINGS)
 

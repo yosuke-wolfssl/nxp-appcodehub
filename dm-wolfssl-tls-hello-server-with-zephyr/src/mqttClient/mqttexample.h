@@ -22,7 +22,7 @@
 #ifndef WOLFMQTT_EXAMPLE_H
 #define WOLFMQTT_EXAMPLE_H
 
-#include "wolfmqtt/mqtt_client.h"
+#include <wolfmqtt/mqtt_client.h>
 
 #ifdef __cplusplus
     extern "C" {

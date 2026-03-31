@@ -52,6 +52,10 @@
 #include <zephyr/net/net_ip.h>
 /* Zephyr Includes End */
 
+/* mqttClient Includes Start */
+#include "mqttClient/fwclient.h"
+/* mqttClient Includes End */
+
 /* Program Defines Start */
 
 #define DEFAULT_PORT 11111  /* Define the port we want to use for the network */
@@ -60,7 +64,7 @@
 
 /* Use DHCP auto IP assignment or static assignment */
 #undef  DHCP_ON
-#define DHCP_ON 0   /* Set to true (1) if you want auto assignment IP, */
+#define DHCP_ON 1   /* Set to true (1) if you want auto assignment IP, */
                     /* set false (0) for statically defined. */
                     /* Make sure to avoid IP conflicts on the network you */
                     /* assign this to, check the defaults before using. */
@@ -310,10 +314,19 @@ int main(void)
     benchmark_test(NULL);
 #endif
 
+#ifdef WOLFMQTT_ZEPHYR
+        printf("\nRunning wolfMQTT firmware client for OTA\n");
+        if (fwclient_main() != 0) {
+            printf("Firmware client has Failed!");
+            return 1;
+        } else {
+            printf("Firmware client completed successfully!");
+        }
+#else
     if (startServer() != 0){
         printf("Server has Failed!");
         return 1;
     }
-
+#endif
     return 0;
 }
