@@ -30,8 +30,8 @@
     #include <curl/curl.h>
 #endif
 
-#include "examples/mqttexample.h"
-#include "examples/mqttport.h"
+#include "mqttexample.h"
+#include "mqttport.h"
 
 #if defined(HAVE_NETX) && !defined(WOLFMQTT_NO_NETX_DNS)
     /* include the NetX DNS addon header */

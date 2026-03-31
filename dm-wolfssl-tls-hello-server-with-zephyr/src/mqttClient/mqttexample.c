@@ -24,7 +24,6 @@
 #include <config.h>
 #endif
 
-#include "wolfmqtt/mqtt_client.h"
 #include "mqttexample.h"
 #include "mqttnet.h"
 #include "mqttport.h"
