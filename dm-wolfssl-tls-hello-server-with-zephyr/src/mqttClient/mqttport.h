@@ -149,8 +149,11 @@ extern "C" {
 #elif defined(WOLFMQTT_ZEPHYR)
     #include <zephyr/kernel.h>
     #include <zephyr/fs/fs.h>
-    #ifndef CONFIG_POSIX_API
+    #ifdef CONFIG_POSIX_API
+        #include <sys/select.h>
+    #else
         #include <zephyr/net/socket.h>
+        #include <zephyr/net/socket_select.h>
     #endif
     #ifdef CONFIG_ARCH_POSIX
         #include <fcntl.h>
@@ -161,11 +164,13 @@ extern "C" {
 
     #define SOCKET_INVALID (-1)
 
-    typedef zsock_fd_set fd_set;
-    #define FD_ZERO ZSOCK_FD_ZERO
-    #define FD_SET  ZSOCK_FD_SET
-    #define FD_ISSET  ZSOCK_FD_ISSET
-    #define select zsock_select
+    #ifndef CONFIG_POSIX_API
+        typedef zsock_fd_set fd_set;
+        #define FD_ZERO ZSOCK_FD_ZERO
+        #define FD_SET  ZSOCK_FD_SET
+        #define FD_ISSET  ZSOCK_FD_ISSET
+        #define select zsock_select
+    #endif
 
     #ifdef WOLFSSL_ZEPHYR
         /* wolfSSL takes care of most defines */

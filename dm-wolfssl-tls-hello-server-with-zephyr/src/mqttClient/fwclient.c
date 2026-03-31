@@ -59,6 +59,9 @@
 #if defined(WOLFMQTT_ZEPHYR)
 #include <zephyr/drivers/flash.h>
 #define SLOT1_NODE DT_NODELABEL(slot1_partition)
+#define SLOT1_OFFSET DT_REG_ADDR(SLOT1_NODE)
+#define SLOT1_SIZE DT_REG_SIZE(SLOT1_NODE)
+#define SLOT1_MTD_NODE DT_MTD_FROM_FIXED_PARTITION(SLOT1_NODE)
 #endif
 
 /* Configuration */
@@ -81,15 +84,21 @@ static int fwfile_save(byte* fileBuf, int fileLen)
         rc = EXIT_FAILURE;
     }
 
-    const struct device* flash_dev = DEVICE_DT_GET(DT_MTD_FROM_FIXED_PARTITION(SLOT1_NODE));
-    if (!device_is_ready(flash_dev)) {
+    if (rc == EXIT_SUCCESS && (size_t)fileLen > SLOT1_SIZE) {
+        PRINTF("Firmware image too large for slot1! len=%d slot=%u", fileLen,
+            (unsigned int)SLOT1_SIZE);
+        rc = EXIT_FAILURE;
+    }
+
+    const struct device* flash_dev = DEVICE_DT_GET(SLOT1_MTD_NODE);
+    if (rc == EXIT_SUCCESS && !device_is_ready(flash_dev)) {
         PRINTF("Flash device not ready!");
         rc = EXIT_FAILURE;
     }
 
     if (rc == EXIT_SUCCESS) {
-        /* Erase flash before writing */
-        rc = flash_erase(flash_dev, 0, fileLen);
+        /* Erase the full slot before writing firmware image. */
+        rc = flash_erase(flash_dev, SLOT1_OFFSET, SLOT1_SIZE);
         if (rc != 0) {
             PRINTF("Flash erase failed! %d", rc);
         }
@@ -97,7 +106,7 @@ static int fwfile_save(byte* fileBuf, int fileLen)
 
     if (rc == EXIT_SUCCESS) {
         /* Write firmware file to flash */
-        rc = flash_write(flash_dev, 0, fileBuf, fileLen);
+        rc = flash_write(flash_dev, SLOT1_OFFSET, fileBuf, fileLen);
         if (rc != 0) {
             PRINTF("Flash write failed! %d", rc);
         }
@@ -106,8 +115,9 @@ static int fwfile_save(byte* fileBuf, int fileLen)
     if (rc == EXIT_SUCCESS) {
         PRINTF("Firmware File Saved to Flash: Len=%d", fileLen);
     }
-#endif
+#else
     PRINTF("Firmware File Save: Len=%d (No Filesystem)", fileLen);
+#endif
     return rc;
 }
 
