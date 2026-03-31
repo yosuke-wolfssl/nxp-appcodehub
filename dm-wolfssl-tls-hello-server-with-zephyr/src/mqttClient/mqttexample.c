@@ -47,6 +47,7 @@ static const char* mTlsPQAlg = NULL;
 /* used for testing only, requires wolfSSL RNG */
 #ifdef ENABLE_MQTT_TLS
 #include <wolfssl/wolfcrypt/random.h>
+#include <wolfssl/certs_test.h> /* Needed for Cert Buffers */
 #endif
 
 static int mqtt_get_rand(byte* data, word32 len)
@@ -124,65 +125,6 @@ char* mqtt_append_random(const char* inStr, word32 inLen)
         tmp = NULL;
     }
     return tmp;
-}
-
-void mqtt_show_usage(MQTTCtx* mqttCtx)
-{
-    PRINTF("%s:", mqttCtx->app_name);
-    PRINTF("-?          Help, print this usage");
-    PRINTF("-h <host>   Host to connect to, default: %s",
-            mqttCtx->host);
-#ifdef ENABLE_MQTT_TLS
-        PRINTF("-p <num>    Port to connect on, default: Normal %d, TLS %d",
-                MQTT_DEFAULT_PORT, MQTT_SECURE_PORT);
-        PRINTF("-t          Enable TLS"); /* Note: this string is used in test
-                                           * scripts to detect TLS feature */
-        PRINTF("-A <file>   Load CA (validate peer)");
-        PRINTF("-K <key>    Use private key (for TLS mutual auth)");
-        PRINTF("-c <cert>   Use certificate (for TLS mutual auth)");
-    #ifndef ENABLE_MQTT_CURL
-        #ifdef HAVE_SNI
-        /* Remove SNI args for sn-client */
-        if(XSTRNCMP(mqttCtx->app_name, "sn-client", 10)){
-            PRINTF("-S <str>    Use Host Name Indication, blank defaults to host");
-        }
-        #endif /* HAVE_SNI */
-        #ifdef HAVE_PQC
-        PRINTF("-Q <str>    Use Key Share with post-quantum algorithm");
-        #endif /* HAVE_PQC */
-    #endif /* !ENABLE_MQTT_CURL */
-        PRINTF("-p <num>    Port to connect on, default: %d",
-             MQTT_DEFAULT_PORT);
-#endif
-    PRINTF("-q <num>    Qos Level 0-2, default: %d",
-            mqttCtx->qos);
-    PRINTF("-s          Disable clean session connect flag");
-    PRINTF("-k <num>    Keep alive seconds, default: %d",
-            mqttCtx->keep_alive_sec);
-    PRINTF("-i <id>     Client Id, default: %s",
-            mqttCtx->client_id);
-    PRINTF("-l          Enable LWT (Last Will and Testament)");
-    PRINTF("-u <str>    Username");
-    PRINTF("-w <str>    Password");
-    if (mqttCtx->message) {
-        /* Only mqttclient example can set message from CLI */
-        PRINTF("-m <str>    Message, default: %s", mqttCtx->message);
-    }
-    PRINTF("-n <str>    Topic name, default: %s", mqttCtx->topic_name);
-    PRINTF("-r          Set Retain flag on publish message");
-    PRINTF("-C <num>    Command Timeout, default: %dms",
-            mqttCtx->cmd_timeout_ms);
-#ifdef WOLFMQTT_V5
-    PRINTF("-P <num>    Max packet size the client will accept, default: %d",
-            DEFAULT_MAX_PKT_SZ);
-#endif
-    PRINTF("-T          Test mode");
-    PRINTF("-x          Skip subscribe (for testing session persistence)");
-    PRINTF("-R <file>   Ready file (touched when subscribed, for test sync)");
-    PRINTF("-f <file>   Use file contents for publish");
-    if (!mqttCtx->debug_on) {
-        PRINTF("-d          Enable example debug messages");
-    }
 }
 
 void mqtt_init_ctx(MQTTCtx* mqttCtx)
@@ -424,20 +366,20 @@ int mqtt_tls_cb(MqttClient* client)
         /* Examples for loading buffer directly */
         /* Load CA certificate buffer */
         rc = wolfSSL_CTX_load_verify_buffer_ex(client->tls.ctx,
-                (const byte*)root_ca, (long)sizeof(root_ca),
+                (const byte*)ca_cert_chain_der, (long)sizeof_ca_cert_chain_der,
                 WOLFSSL_FILETYPE_ASN1, 0, WOLFSSL_LOAD_FLAG_DATE_ERR_OKAY);
 
         /* Load Client Cert */
         if (rc == WOLFSSL_SUCCESS) {
             rc = wolfSSL_CTX_use_certificate_buffer(client->tls.ctx,
-                (const byte*)device_cert, (long)sizeof(device_cert),
+                (const byte*)client_cert_der_2048, (long)sizeof_client_cert_der_2048,
                 WOLFSSL_FILETYPE_ASN1);
         }
 
         /* Load Private Key */
         if (rc == WOLFSSL_SUCCESS) {
             rc = wolfSSL_CTX_use_PrivateKey_buffer(client->tls.ctx,
-                (const byte*)device_priv_key, (long)sizeof(device_priv_key),
+                (const byte*)client_key_der_2048, (long)sizeof_client_key_der_2048,
                 WOLFSSL_FILETYPE_ASN1);
         }
     #endif /* !NO_FILESYSTEM */

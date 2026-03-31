@@ -422,6 +422,7 @@ extern "C" {
 #ifdef CONFIG_WOLFSSL_DEBUG
     #define DEBUG_WOLFSSL
     #define DEBUG_WOLFMQTT
+    #define WOLFMQTT_DEBUG_SOCKET
 #else
     #if 1
         #define NO_ERROR_STRINGS
