@@ -22,6 +22,10 @@
 #ifndef WOLFMQTT_EXAMPLE_H
 #define WOLFMQTT_EXAMPLE_H
 
+#if defined(CONFIG_WOLFMQTT) && !defined(WOLFMQTT_ZEPHYR)
+    #define WOLFMQTT_ZEPHYR
+#endif
+
 #include <wolfmqtt/mqtt_client.h>
 
 #ifdef __cplusplus

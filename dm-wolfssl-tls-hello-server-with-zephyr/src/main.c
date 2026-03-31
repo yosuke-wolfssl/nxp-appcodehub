@@ -314,7 +314,7 @@ int main(void)
     benchmark_test(NULL);
 #endif
 
-#ifdef WOLFMQTT_ZEPHYR
+#if defined(CONFIG_WOLFMQTT)
         printf("\nRunning wolfMQTT firmware client for OTA\n");
         if (fwclient_main() != 0) {
             printf("Firmware client has Failed!");
