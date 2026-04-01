@@ -62,6 +62,11 @@
 #define SLOT1_OFFSET DT_REG_ADDR(SLOT1_NODE)
 #define SLOT1_SIZE DT_REG_SIZE(SLOT1_NODE)
 #define SLOT1_MTD_NODE DT_MTD_FROM_FIXED_PARTITION(SLOT1_NODE)
+#if defined(CONFIG_FLASH_FILL_BUFFER_SIZE)
+    #define FLASH_WRITE_BLOCK_MAX CONFIG_FLASH_FILL_BUFFER_SIZE
+#else
+    #define FLASH_WRITE_BLOCK_MAX 256
+#endif
 #endif
 
 /* Configuration */
@@ -72,28 +77,88 @@
 /* Locals */
 static int mStopRead = 0;
 static int mTestDone = 0;
-static byte* mFwBuf;
+static byte mMsgBuf[FIRMWARE_MAX_BUFFER];
 
+static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset);
 
-static int fwfile_save(byte* fileBuf, int fileLen)
+typedef struct FwClientTransfer_s {
+    word32 total_len;
+    word32 bytes_written;
+    word16 expected_chunk;
+    int active;
+#if !defined(NO_FILESYSTEM)
+    FILE* fp;
+#elif defined(WOLFMQTT_ZEPHYR)
+    const struct device* flash_dev;
+    word32 flash_written;
+    word32 write_block_size;
+    word32 pending_len;
+    byte pending[FLASH_WRITE_BLOCK_MAX];
+#endif
+} FwClientTransfer;
+
+static FwClientTransfer mTransfer;
+
+static void fw_transfer_reset(void)
 {
+#if !defined(NO_FILESYSTEM)
+    if (mTransfer.fp != NULL) {
+        fclose(mTransfer.fp);
+        mTransfer.fp = NULL;
+    }
+#endif
+    XMEMSET(&mTransfer, 0, sizeof(mTransfer));
+}
+
+static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
+{
+    if (mqttCtx == NULL || total_len == 0) {
+        return EXIT_FAILURE;
+    }
+
+    fw_transfer_reset();
+    mTransfer.total_len = total_len;
+    mTransfer.active = 1;
+
+#if !defined(NO_FILESYSTEM)
+    mTransfer.fp = fopen(mqttCtx->pub_file, "wb");
+    if (mTransfer.fp == NULL) {
+        PRINTF("File %s open error", mqttCtx->pub_file);
+        fw_transfer_reset();
+        return EXIT_FAILURE;
+    }
+#else
     int rc = EXIT_SUCCESS;
-#if defined(WOLFMQTT_ZEPHYR)
-    if (fileBuf == NULL || fileLen <= 0) {
-        PRINTF("Invalid firmware file buffer or length!");
-        rc = EXIT_FAILURE;
-    }
-
-    if (rc == EXIT_SUCCESS && (size_t)fileLen > SLOT1_SIZE) {
-        PRINTF("Firmware image too large for slot1! len=%d slot=%u", fileLen,
-            (unsigned int)SLOT1_SIZE);
-        rc = EXIT_FAILURE;
-    }
-
     const struct device* flash_dev = DEVICE_DT_GET(SLOT1_MTD_NODE);
+    const struct flash_parameters* flash_params;
+
+    if (total_len > SLOT1_SIZE) {
+        PRINTF("Firmware image too large for slot1! len=%u slot=%u",
+            total_len, (unsigned int)SLOT1_SIZE);
+        fw_transfer_reset();
+        return EXIT_FAILURE;
+    }
+
     if (rc == EXIT_SUCCESS && !device_is_ready(flash_dev)) {
         PRINTF("Flash device not ready!");
         rc = EXIT_FAILURE;
+    }
+
+    if (rc == EXIT_SUCCESS) {
+        flash_params = flash_get_parameters(flash_dev);
+        if (flash_params == NULL || flash_params->write_block_size == 0 ||
+            flash_params->write_block_size > FLASH_WRITE_BLOCK_MAX) {
+            PRINTF("Unsupported flash write block size: %u",
+                (unsigned int)((flash_params != NULL) ?
+                    flash_params->write_block_size : 0));
+            rc = EXIT_FAILURE;
+        }
+        else {
+            mTransfer.flash_dev = flash_dev;
+            mTransfer.write_block_size = flash_params->write_block_size;
+            mTransfer.flash_written = 0;
+            mTransfer.pending_len = 0;
+        }
     }
 
     if (rc == EXIT_SUCCESS) {
@@ -101,12 +166,171 @@ static int fwfile_save(byte* fileBuf, int fileLen)
         rc = flash_erase(flash_dev, SLOT1_OFFSET, SLOT1_SIZE);
         if (rc != 0) {
             PRINTF("Flash erase failed! %d", rc);
+            rc = EXIT_FAILURE;
         }
+    }
+
+    if (rc != EXIT_SUCCESS) {
+        fw_transfer_reset();
+        return EXIT_FAILURE;
+    }
+#endif
+
+    PRINTF("Firmware transfer started: total %u bytes", total_len);
+    return 0;
+}
+
+static int fw_transfer_write_chunk(const byte* chunk_data, word16 chunk_len)
+{
+#if !defined(NO_FILESYSTEM)
+    int written;
+#else
+    int rc = 0;
+    const byte* p = chunk_data;
+    word32 remaining = chunk_len;
+    word32 copy_len;
+    word32 direct_len;
+#endif
+
+
+    if (!mTransfer.active || chunk_data == NULL || chunk_len == 0) {
+        return EXIT_FAILURE;
+    }
+
+    if (((word32)chunk_len > mTransfer.total_len) ||
+        (mTransfer.bytes_written > (mTransfer.total_len - (word32)chunk_len))) {
+        PRINTF("Chunk exceeds expected total length");
+        return EXIT_FAILURE;
+    }
+
+#if !defined(NO_FILESYSTEM)
+    written = (int)fwrite(chunk_data, 1, chunk_len, mTransfer.fp);
+    if (written != chunk_len) {
+        PRINTF("Chunk file write error: %d", written);
+        return EXIT_FAILURE;
+    }
+#else
+    if (mTransfer.pending_len > 0) {
+        copy_len = mTransfer.write_block_size - mTransfer.pending_len;
+        if (copy_len > remaining) {
+            copy_len = remaining;
+        }
+
+        XMEMCPY(&mTransfer.pending[mTransfer.pending_len], p, copy_len);
+        mTransfer.pending_len += copy_len;
+        p += copy_len;
+        remaining -= copy_len;
+
+        if (mTransfer.pending_len == mTransfer.write_block_size) {
+            rc = fwfile_save(mTransfer.pending, (int)mTransfer.pending_len,
+                mTransfer.flash_written);
+            if (rc != 0) {
+                PRINTF("Chunk file save error: %d", rc);
+                return EXIT_FAILURE;
+            }
+            mTransfer.flash_written += mTransfer.pending_len;
+            mTransfer.pending_len = 0;
+        }
+    }
+
+    direct_len = remaining - (remaining % mTransfer.write_block_size);
+    if (direct_len > 0) {
+        rc = fwfile_save(p, (int)direct_len, mTransfer.flash_written);
+        if (rc != 0) {
+            PRINTF("Chunk file save error: %d", rc);
+            return EXIT_FAILURE;
+        }
+        mTransfer.flash_written += direct_len;
+        p += direct_len;
+        remaining -= direct_len;
+    }
+
+    if (remaining > 0) {
+        XMEMCPY(mTransfer.pending, p, remaining);
+        mTransfer.pending_len = remaining;
+    }
+#endif
+
+    mTransfer.bytes_written += chunk_len;
+
+    return 0;
+}
+
+static int fw_transfer_finish(MQTTCtx* mqttCtx)
+{
+    int rc = 0;
+
+    if (mqttCtx == NULL) {
+        return EXIT_FAILURE;
+    }
+
+#if defined(NO_FILESYSTEM) && defined(WOLFMQTT_ZEPHYR)
+    if (mTransfer.pending_len > 0) {
+        byte aligned_buf[FLASH_WRITE_BLOCK_MAX];
+
+        XMEMSET(aligned_buf, 0xFF, mTransfer.write_block_size);
+        XMEMCPY(aligned_buf, mTransfer.pending, mTransfer.pending_len);
+
+        rc = fwfile_save(aligned_buf, (int)mTransfer.write_block_size,
+            mTransfer.flash_written);
+        if (rc != 0) {
+            PRINTF("Final chunk flush error: %d", rc);
+            fw_transfer_reset();
+            return EXIT_FAILURE;
+        }
+        mTransfer.flash_written += mTransfer.write_block_size;
+        mTransfer.pending_len = 0;
+    }
+#endif
+
+    PRINTF("Firmware transfer complete: %u bytes", mTransfer.bytes_written);
+    fw_transfer_reset();
+
+    if (mqttCtx->test_mode) {
+        mTestDone = 1;
+    } else {
+        mStopRead = 1;
+    }
+
+    return 0;
+}
+
+
+static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset)
+{
+    int rc = EXIT_SUCCESS;
+#if defined(WOLFMQTT_ZEPHYR)
+    word32 write_block_size = mTransfer.write_block_size;
+
+    if (fileBuf == NULL || fileLen <= 0) {
+        PRINTF("Invalid firmware file buffer or length!");
+        rc = EXIT_FAILURE;
+    }
+
+    if (rc == EXIT_SUCCESS &&
+        ((word32)fileLen > SLOT1_SIZE || flash_offset > (SLOT1_SIZE - (word32)fileLen))) {
+        PRINTF("Firmware chunk write exceeds slot1: off=%u len=%d slot=%u",
+            flash_offset, fileLen, (unsigned int)SLOT1_SIZE);
+        rc = EXIT_FAILURE;
+    }
+
+    if (rc == EXIT_SUCCESS &&
+        ((flash_offset % write_block_size) != 0 ||
+         ((word32)fileLen % write_block_size) != 0)) {
+        PRINTF("Flash write alignment error: off=%u len=%d block=%u",
+            flash_offset, fileLen, (unsigned int)write_block_size);
+        rc = EXIT_FAILURE;
+    }
+
+    if (rc == EXIT_SUCCESS && !device_is_ready(mTransfer.flash_dev)) {
+        PRINTF("Flash device not ready!");
+        rc = EXIT_FAILURE;
     }
 
     if (rc == EXIT_SUCCESS) {
         /* Write firmware file to flash */
-        rc = flash_write(flash_dev, SLOT1_OFFSET, fileBuf, fileLen);
+        rc = flash_write(mTransfer.flash_dev, SLOT1_OFFSET + flash_offset,
+            fileBuf, fileLen);
         if (rc != 0) {
             PRINTF("Flash write failed! %d", rc);
         }
@@ -121,69 +345,85 @@ static int fwfile_save(byte* fileBuf, int fileLen)
     return rc;
 }
 
-static int fw_message_process(MQTTCtx *mqttCtx, byte* buffer, word32 len)
+static int fw_message_process(MQTTCtx *mqttCtx, const byte* buffer, word32 len)
 {
-    int rc = 0;
-    FirmwareHeader* header = (FirmwareHeader*)buffer;
-    byte *sigBuf, *pubKeyBuf, *fwBuf;
-#ifdef ENABLE_FIRMWARE_SIG
-    ecc_key eccKey;
-#endif
-    word32 check_len = sizeof(FirmwareHeader) + header->sigLen +
-        header->pubKeyLen + header->fwLen;
+    const MessageHeader* header;
+    const byte* payload;
+    word32 payload_len;
 
-    printf("Enter fw_message_process\n");
-    PRINTF("header sizes: sigLen=%u, pubKeyLen=%u, fwLen=%u",
-       header->sigLen, header->pubKeyLen, header->fwLen);
-
-    /* Verify entire message was received */
-    if (len != check_len) {
-        PRINTF("Message header vs. actual size mismatch! %d != %d",
-            len, check_len);
+    if (mqttCtx == NULL || buffer == NULL) {
         return EXIT_FAILURE;
     }
 
-    /* Get pointers to structure elements */
-    sigBuf = (buffer + sizeof(FirmwareHeader));
-    pubKeyBuf = (buffer + sizeof(FirmwareHeader) + header->sigLen);
-    fwBuf = (buffer + sizeof(FirmwareHeader) + header->sigLen +
-        header->pubKeyLen);
+    if (len < sizeof(MessageHeader)) {
+        PRINTF("Chunk too small: %u", len);
+        return EXIT_FAILURE;
+    }
 
-#ifdef ENABLE_FIRMWARE_SIG
-    /* Import the public key */
-    wc_ecc_init(&eccKey);
-    rc = wc_ecc_import_x963(pubKeyBuf, header->pubKeyLen, &eccKey);
-    if (rc == 0) {
-        /* Perform signature verification using public key */
-        rc = wc_SignatureVerify(
-            FIRMWARE_HASH_TYPE, FIRMWARE_SIG_TYPE,
-            fwBuf, header->fwLen,
-            sigBuf, header->sigLen,
-            &eccKey, sizeof(eccKey));
-        PRINTF("Firmware Signature Verification: %s (%d)",
-            (rc == 0) ? "Pass" : "Fail", rc);
-#else
-        (void)pubKeyBuf;
-        (void)sigBuf;
-#endif
-        if (rc == 0) {
-            /* Process firmware image */
-            rc = fwfile_save(fwBuf, header->fwLen);
-            if (rc == 0) {
-                mStopRead = 1;
-                PRINTF("Firmware Update Processed Successfully!");
-            }
+    header = (const MessageHeader*)buffer;
+    payload = buffer + sizeof(MessageHeader);
+    payload_len = len - sizeof(MessageHeader);
+
+    if (header->chunkSize != payload_len) {
+        PRINTF("Chunk size mismatch: header %u, payload %u",
+            header->chunkSize, payload_len);
+        return EXIT_FAILURE;
+    }
+
+    if (header->totalLen == 0) {
+        PRINTF("Invalid total length 0");
+        return EXIT_FAILURE;
+    }
+
+    if (header->chunkNumber == 0) {
+        if (fw_transfer_begin(mqttCtx, header->totalLen) != 0) {
+            return EXIT_FAILURE;
         }
-
-#ifdef ENABLE_FIRMWARE_SIG
     }
-    else {
-        PRINTF("ECC public key import failed! %d", rc);
-    }
-    wc_ecc_free(&eccKey);
-#endif
 
-    return rc;
+    if (!mTransfer.active) {
+        PRINTF("Received chunk without active transfer");
+        return EXIT_FAILURE;
+    }
+
+    if (header->totalLen != mTransfer.total_len) {
+        PRINTF("Transfer total length changed: %u -> %u",
+            mTransfer.total_len, header->totalLen);
+        fw_transfer_reset();
+        return EXIT_FAILURE;
+    }
+
+    if (header->chunkNumber < mTransfer.expected_chunk) {
+        /* Duplicate chunk from retransmit; ignore if already committed. */
+        PRINTF("Ignoring duplicate chunk %u", header->chunkNumber);
+        return 0;
+    }
+
+    if (header->chunkNumber != mTransfer.expected_chunk) {
+        PRINTF("Out-of-order chunk: expected %u, got %u",
+            mTransfer.expected_chunk, header->chunkNumber);
+        fw_transfer_reset();
+        return EXIT_FAILURE;
+    }
+
+    if (fw_transfer_write_chunk(payload, header->chunkSize) != 0) {
+        fw_transfer_reset();
+        return EXIT_FAILURE;
+    }
+
+    PRINTF("Firmware chunk %u: %u bytes (%u/%u)",
+        header->chunkNumber,
+        header->chunkSize,
+        mTransfer.bytes_written,
+        mTransfer.total_len);
+
+    mTransfer.expected_chunk++;
+
+    if (mTransfer.bytes_written == mTransfer.total_len) {
+        return fw_transfer_finish(mqttCtx);
+    }
+
+    return 0;
 }
 
 static int mqtt_message_cb(MqttClient *client, MqttMessage *msg,
@@ -191,41 +431,32 @@ static int mqtt_message_cb(MqttClient *client, MqttMessage *msg,
 {
     MQTTCtx* mqttCtx = (MQTTCtx*)client->ctx;
 
-    /* Verify this message is for the firmware topic */
-    if (msg_new &&
-        XSTRNCMP(msg->topic_name, mqttCtx->topic_name,
-            msg->topic_name_len) == 0 &&
-        !mFwBuf)
-    {
-        /* Allocate buffer for entire message */
-        /* Note: On an embedded system this could just be a write to flash.
-                 If writing to flash change FIRMWARE_MAX_BUFFER to match
-                 block size */
-        mFwBuf = (byte*)WOLFMQTT_MALLOC(msg->total_len);
-        if (mFwBuf == NULL) {
+    if (msg_new) {
+        if (XSTRNCMP(msg->topic_name, mqttCtx->topic_name,
+            msg->topic_name_len) != 0) {
+            return MQTT_CODE_SUCCESS;
+        }
+
+        if (msg->total_len > sizeof(mMsgBuf)) {
+            PRINTF("Incoming publish exceeds firmware message buffer: %u",
+                msg->total_len);
             return MQTT_CODE_ERROR_OUT_OF_BUFFER;
         }
 
-        /* Print incoming message */
-        PRINTF("MQTT Firmware Message: Qos %d, Len %u",
+        PRINTF("MQTT Firmware Chunk Message: Qos %d, Len %u",
             msg->qos, msg->total_len);
     }
 
-    if (mFwBuf) {
-        XMEMCPY(&mFwBuf[msg->buffer_pos], msg->buffer, msg->buffer_len);
+    if ((msg->buffer_pos + msg->buffer_len) > sizeof(mMsgBuf)) {
+        PRINTF("Incoming payload chunk exceeds message buffer");
+        return MQTT_CODE_ERROR_MALFORMED_DATA;
+    }
 
-        /* Process message if done */
-        if (msg_done) {
-            fw_message_process(mqttCtx, mFwBuf, msg->total_len);
+    XMEMCPY(&mMsgBuf[msg->buffer_pos], msg->buffer, msg->buffer_len);
 
-            /* Free */
-            WOLFMQTT_FREE(mFwBuf);
-            mFwBuf = NULL;
-
-            /* for test mode stop client */
-            if (mqttCtx->test_mode) {
-                mTestDone = 1;
-            }
+    if (msg_done) {
+        if (fw_message_process(mqttCtx, mMsgBuf, msg->total_len) != 0) {
+            return MQTT_CODE_ERROR_MALFORMED_DATA;
         }
     }
 
@@ -502,6 +733,8 @@ disconn:
 exit:
 
     if (rc != MQTT_CODE_CONTINUE) {
+        fw_transfer_reset();
+
         /* Free resources */
         if (mqttCtx->tx_buf) WOLFMQTT_FREE(mqttCtx->tx_buf);
         if (mqttCtx->rx_buf) WOLFMQTT_FREE(mqttCtx->rx_buf);
