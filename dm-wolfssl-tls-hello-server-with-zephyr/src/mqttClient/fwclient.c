@@ -57,6 +57,7 @@
 #include "mqttnet.h"
 
 #if defined(WOLFMQTT_ZEPHYR)
+#include <stdint.h>
 #include <zephyr/drivers/flash.h>
 #define SLOT1_NODE DT_NODELABEL(slot1_partition)
 #define SLOT1_OFFSET DT_REG_ADDR(SLOT1_NODE)
@@ -67,6 +68,11 @@
 #else
     #define FLASH_WRITE_BLOCK_MAX 256
 #endif
+
+/* HAL API implemented in src/hal/hal_zephyr.c */
+void hal_init(void);
+int hal_flash_write(uint32_t address, const uint8_t* data, int len);
+int hal_flash_erase(uint32_t address, int len);
 #endif
 
 /* Configuration */
@@ -163,7 +169,8 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
 
     if (rc == EXIT_SUCCESS) {
         /* Erase the full slot before writing firmware image. */
-        rc = flash_erase(flash_dev, SLOT1_OFFSET, SLOT1_SIZE);
+        hal_init();
+        rc = hal_flash_erase((uint32_t)SLOT1_OFFSET, (int)SLOT1_SIZE);
         if (rc != 0) {
             PRINTF("Flash erase failed! %d", rc);
             rc = EXIT_FAILURE;
@@ -322,15 +329,10 @@ static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset)
         rc = EXIT_FAILURE;
     }
 
-    if (rc == EXIT_SUCCESS && !device_is_ready(mTransfer.flash_dev)) {
-        PRINTF("Flash device not ready!");
-        rc = EXIT_FAILURE;
-    }
-
     if (rc == EXIT_SUCCESS) {
-        /* Write firmware file to flash */
-        rc = flash_write(mTransfer.flash_dev, SLOT1_OFFSET + flash_offset,
-            fileBuf, fileLen);
+        /* Write firmware file to flash through HAL */
+        rc = hal_flash_write((uint32_t)(SLOT1_OFFSET + flash_offset),
+            (const uint8_t*)fileBuf, fileLen);
         if (rc != 0) {
             PRINTF("Flash write failed! %d", rc);
         }
