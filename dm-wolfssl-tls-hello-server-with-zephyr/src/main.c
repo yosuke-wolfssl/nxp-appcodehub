@@ -56,6 +56,10 @@
 #include "mqttClient/fwclient.h"
 /* mqttClient Includes End */
 
+/* wolfBoot Includes Start */
+#include <wolfboot/wolfboot.h>
+/* wolfBoot Includes End */
+
 /* Program Defines Start */
 
 #define DEFAULT_PORT 11111  /* Define the port we want to use for the network */
@@ -320,7 +324,8 @@ int main(void)
             printf("Firmware client has Failed!");
             return 1;
         } else {
-            printf("Firmware client completed successfully!");
+            printf("Firmware client completed successfully!\n");
+            wolfBoot_update_trigger();
         }
 #else
     if (startServer() != 0){
