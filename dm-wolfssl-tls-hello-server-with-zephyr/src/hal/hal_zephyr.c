@@ -123,9 +123,6 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
         return -1;
     }
 
-    printk("hal_flash_write: addr=0x%08x len=%d\n", (unsigned int)address,
-           len);
-
     while (len > 0) {
         off_t block_offset = offset & ~((off_t)pflash_write_block_size - 1);
         uint32_t within_block = (uint32_t)(offset - block_offset);
@@ -161,8 +158,6 @@ int RAMFUNCTION hal_flash_write(uint32_t address, const uint8_t *data, int len)
         written += (int)copy;
     }
 
-    printk("hal_flash_write: done\n");
-
     return 0;
 }
 
@@ -190,9 +185,6 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
         return -1;
     }
 
-    printk("hal_flash_erase: addr=0x%08x len=%d\n", (unsigned int)address,
-           len);
-
     if (sector_size == 0U) {
         sector_size = WOLFBOOT_SECTOR_SIZE;
     }
@@ -214,8 +206,6 @@ int RAMFUNCTION hal_flash_erase(uint32_t address, int len)
         offset += (off_t)sector_size;
         len -= (int)sector_size;
     }
-
-    printk("hal_flash_erase: done\n");
 
     return 0;
 }
