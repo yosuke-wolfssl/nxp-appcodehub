@@ -38,6 +38,7 @@
 /* Standard Packages Start */
 #include <stdio.h>
 #include <time.h>
+#include <string.h>
 /* Standard Packages End */
 
 /* Zephyr Includes Start */
@@ -57,7 +58,7 @@
 /* mqttClient Includes End */
 
 /* wolfBoot Includes Start */
-#include <wolfboot/wolfboot.h>
+#include "wolfboot/wolfboot.h"
 /* wolfBoot Includes End */
 
 /* Program Defines Start */
@@ -325,7 +326,7 @@ int main(void)
             return 1;
         } else {
             printf("Firmware client completed successfully!\n");
-            wolfBoot_update_trigger();
+            wolfBoot_nsc_update_trigger();
         }
 #else
     if (startServer() != 0){
