@@ -58,21 +58,16 @@
 
 #if defined(WOLFMQTT_ZEPHYR)
 #include <stdint.h>
-#include <zephyr/drivers/flash.h>
+#include "wolfboot/wolfboot.h"
 #define SLOT1_NODE DT_NODELABEL(slot1_partition)
 #define SLOT1_OFFSET DT_REG_ADDR(SLOT1_NODE)
 #define SLOT1_SIZE DT_REG_SIZE(SLOT1_NODE)
-#define SLOT1_MTD_NODE DT_MTD_FROM_FIXED_PARTITION(SLOT1_NODE)
+#define SLOT1_WRITE_BLOCK_SIZE DT_PROP(DT_CHOSEN(zephyr_flash), write_block_size)
 #if defined(CONFIG_FLASH_FILL_BUFFER_SIZE)
     #define FLASH_WRITE_BLOCK_MAX CONFIG_FLASH_FILL_BUFFER_SIZE
 #else
     #define FLASH_WRITE_BLOCK_MAX 256
 #endif
-
-/* HAL API implemented in src/hal/hal_zephyr.c */
-void hal_init(void);
-int hal_flash_write(uint32_t address, const uint8_t* data, int len);
-int hal_flash_erase(uint32_t address, int len);
 #endif
 
 /* Configuration */
@@ -92,10 +87,9 @@ typedef struct FwClientTransfer_s {
     word32 bytes_written;
     word16 expected_chunk;
     int active;
-#if !defined(NO_FILESYSTEM)
+#if !defined(WOLFMQTT_ZEPHYR)
     FILE* fp;
-#elif defined(WOLFMQTT_ZEPHYR)
-    const struct device* flash_dev;
+#else
     word32 flash_written;
     word32 write_block_size;
     word32 pending_len;
@@ -107,7 +101,7 @@ static FwClientTransfer mTransfer;
 
 static void fw_transfer_reset(void)
 {
-#if !defined(NO_FILESYSTEM)
+#if !defined(WOLFMQTT_ZEPHYR)
     if (mTransfer.fp != NULL) {
         fclose(mTransfer.fp);
         mTransfer.fp = NULL;
@@ -126,7 +120,7 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
     mTransfer.total_len = total_len;
     mTransfer.active = 1;
 
-#if !defined(NO_FILESYSTEM)
+#if !defined(WOLFMQTT_ZEPHYR)
     mTransfer.fp = fopen(mqttCtx->pub_file, "wb");
     if (mTransfer.fp == NULL) {
         PRINTF("File %s open error", mqttCtx->pub_file);
@@ -135,8 +129,6 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
     }
 #else
     int rc = EXIT_SUCCESS;
-    const struct device* flash_dev = DEVICE_DT_GET(SLOT1_MTD_NODE);
-    const struct flash_parameters* flash_params;
 
     if (total_len > SLOT1_SIZE) {
         PRINTF("Firmware image too large for slot1! len=%u slot=%u",
@@ -145,32 +137,21 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
         return EXIT_FAILURE;
     }
 
-    if (rc == EXIT_SUCCESS && !device_is_ready(flash_dev)) {
-        PRINTF("Flash device not ready!");
-        rc = EXIT_FAILURE;
-    }
-
     if (rc == EXIT_SUCCESS) {
-        flash_params = flash_get_parameters(flash_dev);
-        if (flash_params == NULL || flash_params->write_block_size == 0 ||
-            flash_params->write_block_size > FLASH_WRITE_BLOCK_MAX) {
-            PRINTF("Unsupported flash write block size: %u",
-                (unsigned int)((flash_params != NULL) ?
-                    flash_params->write_block_size : 0));
+        mTransfer.write_block_size = SLOT1_WRITE_BLOCK_SIZE;
+        mTransfer.flash_written = 0;
+        mTransfer.pending_len = 0;
+
+        if (mTransfer.write_block_size == 0 ||
+            mTransfer.write_block_size > FLASH_WRITE_BLOCK_MAX) {
+            PRINTF("Unsupported flash write block size: %u", mTransfer.write_block_size);
             rc = EXIT_FAILURE;
-        }
-        else {
-            mTransfer.flash_dev = flash_dev;
-            mTransfer.write_block_size = flash_params->write_block_size;
-            mTransfer.flash_written = 0;
-            mTransfer.pending_len = 0;
         }
     }
 
     if (rc == EXIT_SUCCESS) {
         /* Erase the full slot before writing firmware image. */
-        hal_init();
-        rc = hal_flash_erase((uint32_t)SLOT1_OFFSET, (int)SLOT1_SIZE);
+        rc = wolfBoot_nsc_erase_update(0U, (int)SLOT1_SIZE);
         if (rc != 0) {
             PRINTF("Flash erase failed! %d", rc);
             rc = EXIT_FAILURE;
@@ -189,7 +170,7 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
 
 static int fw_transfer_write_chunk(const byte* chunk_data, word16 chunk_len)
 {
-#if !defined(NO_FILESYSTEM)
+#if !defined(WOLFMQTT_ZEPHYR)
     int written;
 #else
     int rc = 0;
@@ -210,7 +191,7 @@ static int fw_transfer_write_chunk(const byte* chunk_data, word16 chunk_len)
         return EXIT_FAILURE;
     }
 
-#if !defined(NO_FILESYSTEM)
+#if !defined(WOLFMQTT_ZEPHYR)
     written = (int)fwrite(chunk_data, 1, chunk_len, mTransfer.fp);
     if (written != chunk_len) {
         PRINTF("Chunk file write error: %d", written);
@@ -271,7 +252,7 @@ static int fw_transfer_finish(MQTTCtx* mqttCtx)
         return EXIT_FAILURE;
     }
 
-#if defined(NO_FILESYSTEM) && defined(WOLFMQTT_ZEPHYR)
+#if defined(WOLFMQTT_ZEPHYR)
     if (mTransfer.pending_len > 0) {
         byte aligned_buf[FLASH_WRITE_BLOCK_MAX];
 
@@ -331,7 +312,7 @@ static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset)
 
     if (rc == EXIT_SUCCESS) {
         /* Write firmware file to flash through HAL */
-        rc = hal_flash_write((uint32_t)(SLOT1_OFFSET + flash_offset),
+        rc = wolfBoot_nsc_write_update((uint32_t)(flash_offset),
             (const uint8_t*)fileBuf, fileLen);
         if (rc != 0) {
             PRINTF("Flash write failed! %d", rc);

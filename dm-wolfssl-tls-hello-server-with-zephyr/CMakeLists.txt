@@ -12,6 +12,7 @@ if(NOT EXISTS "${CMAKE_SOURCE_DIR}/__repo__")
 endif()
 
 target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE src/system_init_ns.c)
 target_sources(app PRIVATE __repo__/modules/crypto/wolfssl/wolfcrypt/test/test.c)
 target_sources(app PRIVATE __repo__/modules/crypto/wolfssl/wolfcrypt/benchmark/benchmark.c)
 target_include_directories(app PRIVATE src)
@@ -26,10 +27,20 @@ target_include_directories(app PRIVATE src/mqttClient)
 target_compile_definitions(app PRIVATE WOLFMQTT_USER_SETTINGS)
 
 # wolfBoot (libwolfboot)
-target_sources(app PRIVATE __repo__/modules/lib/wolfboot/src/libwolfboot.c)
-target_include_directories(app PRIVATE __repo__/modules/lib/wolfboot/include)
-target_sources(app PRIVATE src/hal/hal_zephyr.c)
-target_include_directories(app PRIVATE src/hal)
+set(WOLFBOOT_ROOT "/Users/yshimizu/work/wolfBoot" CACHE PATH "Path to wolfBoot checkout")
+set(WOLFBOOT_NSC_OBJECT "${WOLFBOOT_ROOT}/src/wolfboot_tz_nsc.o" CACHE FILEPATH "Path to wolfBoot NSC prebuilt object")
+
+if(NOT EXISTS "${WOLFBOOT_NSC_OBJECT}")
+    message(FATAL_ERROR "wolfBoot NSC object not found: ${WOLFBOOT_NSC_OBJECT}")
+endif()
+
+if(NOT EXISTS "${WOLFBOOT_ROOT}/include/wolfboot/wolfboot.h")
+    message(FATAL_ERROR "wolfBoot headers not found under: ${WOLFBOOT_ROOT}/include")
+endif()
+
+target_link_libraries(app PRIVATE "${WOLFBOOT_NSC_OBJECT}")
+target_include_directories(app PRIVATE "${WOLFBOOT_ROOT}/include")
+target_compile_definitions(app PRIVATE TZEN)
 
 add_definitions(-DWOLFSSL_USER_SETTINGS)
 
