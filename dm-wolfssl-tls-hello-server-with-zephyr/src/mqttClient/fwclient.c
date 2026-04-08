@@ -150,6 +150,7 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
     }
 
     if (rc == EXIT_SUCCESS) {
+        PRINTF("Erasing flash for firmware update...\n");
         /* Erase the full slot before writing firmware image. */
         rc = wolfBoot_nsc_erase_update(0U, (int)SLOT1_SIZE);
         if (rc != 0) {
