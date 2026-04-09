@@ -58,6 +58,7 @@
 
 #if defined(WOLFMQTT_ZEPHYR)
 #include <stdint.h>
+#include <zephyr/kernel.h>
 #include "wolfboot/wolfboot.h"
 #define SLOT1_NODE DT_NODELABEL(slot1_partition)
 #define SLOT1_OFFSET DT_REG_ADDR(SLOT1_NODE)
@@ -78,9 +79,86 @@
 /* Locals */
 static int mStopRead = 0;
 static int mTestDone = 0;
-static byte mMsgBuf[FIRMWARE_MAX_BUFFER];
+static byte mMsgBuf[FIRMWARE_MAX_BUFFER] __attribute__((aligned(16)));
+static int mSubCommandComplete = 0;
+static byte mMsgIsCommand = 0;
 
+static void fw_transfer_reset(void);
 static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset);
+
+static int fw_topic_matches(const MqttMessage* msg, const char* topic)
+{
+    word32 topic_len;
+
+    if (msg == NULL || topic == NULL) {
+        return 0;
+    }
+
+    topic_len = (word32)XSTRLEN(topic);
+    if (msg->topic_name_len != topic_len) {
+        return 0;
+    }
+
+    return (XSTRNCMP(msg->topic_name, topic, topic_len) == 0);
+}
+
+static int fw_command_process(const byte* buffer, word32 len)
+{
+    const CommandHeader* command;
+
+    if (buffer == NULL || len < sizeof(CommandHeader)) {
+        PRINTF("Command message too small: %u", len);
+        return EXIT_FAILURE;
+    }
+
+    command = (const CommandHeader*)buffer;
+
+    switch (command->commandId) {
+        case COMMAND_ID_ERASE:
+        {
+#if defined(WOLFMQTT_ZEPHYR)
+            int rc;
+            unsigned int irq_key;
+
+            PRINTF("Erase command received. Erasing update partition...");
+            PRINTF("OTA slot1 layout: offset=0x%08x size=0x%08x write_block=%u",
+                (unsigned int)SLOT1_OFFSET,
+                (unsigned int)SLOT1_SIZE,
+                (unsigned int)SLOT1_WRITE_BLOCK_SIZE);
+            PRINTF("Erase request: rel_off=0x%08x len=0x%08x abs_start=0x%08x",
+                0U,
+                (unsigned int)SLOT1_SIZE,
+                (unsigned int)SLOT1_OFFSET);
+            fw_transfer_reset();
+
+            k_sched_lock();
+            irq_key = irq_lock();
+            PRINTF("NSC erase call (sched/irq locked)");
+            rc = wolfBoot_nsc_erase_update(0U, (uint32_t)SLOT1_SIZE);
+            irq_unlock(irq_key);
+            k_sched_unlock();
+
+            if (rc != 0) {
+                PRINTF("Flash erase failed! rc=%d (slot1_off=0x%08x slot1_size=0x%08x)",
+                    rc,
+                    (unsigned int)SLOT1_OFFSET,
+                    (unsigned int)SLOT1_SIZE);
+                return EXIT_FAILURE;
+            }
+            PRINTF("Update partition erased");
+#else
+            PRINTF("Erase command received (ignored on this target)");
+#endif
+            break;
+        }
+
+        default:
+            PRINTF("Unknown command id: %u", command->commandId);
+            break;
+    }
+
+    return 0;
+}
 
 typedef struct FwClientTransfer_s {
     word32 total_len;
@@ -145,16 +223,6 @@ static int fw_transfer_begin(MQTTCtx* mqttCtx, word32 total_len)
         if (mTransfer.write_block_size == 0 ||
             mTransfer.write_block_size > FLASH_WRITE_BLOCK_MAX) {
             PRINTF("Unsupported flash write block size: %u", mTransfer.write_block_size);
-            rc = EXIT_FAILURE;
-        }
-    }
-
-    if (rc == EXIT_SUCCESS) {
-        PRINTF("Erasing flash for firmware update...\n");
-        /* Erase the full slot before writing firmware image. */
-        rc = wolfBoot_nsc_erase_update(0U, (int)SLOT1_SIZE);
-        if (rc != 0) {
-            PRINTF("Flash erase failed! %d", rc);
             rc = EXIT_FAILURE;
         }
     }
@@ -290,6 +358,7 @@ static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset)
     int rc = EXIT_SUCCESS;
 #if defined(WOLFMQTT_ZEPHYR)
     word32 write_block_size = mTransfer.write_block_size;
+    unsigned int irq_key;
 
     if (fileBuf == NULL || fileLen <= 0) {
         PRINTF("Invalid firmware file buffer or length!");
@@ -312,11 +381,21 @@ static int fwfile_save(const byte* fileBuf, int fileLen, word32 flash_offset)
     }
 
     if (rc == EXIT_SUCCESS) {
+        k_sched_lock();
+        irq_key = irq_lock();
+
         /* Write firmware file to flash through HAL */
         rc = wolfBoot_nsc_write_update((uint32_t)(flash_offset),
             (const uint8_t*)fileBuf, fileLen);
+
+        irq_unlock(irq_key);
+        k_sched_unlock();
         if (rc != 0) {
-            PRINTF("Flash write failed! %d", rc);
+            PRINTF("Flash write failed! rc=%d rel_off=0x%08x len=0x%08x abs=0x%08x",
+                rc,
+                (unsigned int)flash_offset,
+                (unsigned int)fileLen,
+                (unsigned int)(SLOT1_OFFSET + flash_offset));
         }
     }
 
@@ -414,10 +493,14 @@ static int mqtt_message_cb(MqttClient *client, MqttMessage *msg,
     byte msg_new, byte msg_done)
 {
     MQTTCtx* mqttCtx = (MQTTCtx*)client->ctx;
+    byte is_fw_topic;
+    byte is_cmd_topic;
+
+    is_fw_topic = (byte)fw_topic_matches(msg, FIRMWARE_TOPIC_NAME);
+    is_cmd_topic = (byte)fw_topic_matches(msg, COMMAND_TOPIC_NAME);
 
     if (msg_new) {
-        if (XSTRNCMP(msg->topic_name, mqttCtx->topic_name,
-            msg->topic_name_len) != 0) {
+        if (!is_fw_topic && !is_cmd_topic) {
             return MQTT_CODE_SUCCESS;
         }
 
@@ -427,11 +510,24 @@ static int mqtt_message_cb(MqttClient *client, MqttMessage *msg,
             return MQTT_CODE_ERROR_OUT_OF_BUFFER;
         }
 
-        PRINTF("MQTT Firmware Chunk Message: Qos %d, Len %u",
-            msg->qos, msg->total_len);
+        mMsgIsCommand = is_cmd_topic;
+
+        if (is_cmd_topic) {
+            PRINTF("MQTT Command Message: Qos %d, Len %u",
+                msg->qos, msg->total_len);
+        }
+        else {
+            PRINTF("MQTT Firmware Chunk Message: Qos %d, Len %u",
+                msg->qos, msg->total_len);
+        }
     }
 
-    if ((msg->buffer_pos + msg->buffer_len) > sizeof(mMsgBuf)) {
+    if (msg->buffer_pos > sizeof(mMsgBuf)) {
+        PRINTF("Incoming payload position exceeds message buffer");
+        return MQTT_CODE_ERROR_MALFORMED_DATA;
+    }
+
+    if (msg->buffer_len > (sizeof(mMsgBuf) - msg->buffer_pos)) {
         PRINTF("Incoming payload chunk exceeds message buffer");
         return MQTT_CODE_ERROR_MALFORMED_DATA;
     }
@@ -439,9 +535,18 @@ static int mqtt_message_cb(MqttClient *client, MqttMessage *msg,
     XMEMCPY(&mMsgBuf[msg->buffer_pos], msg->buffer, msg->buffer_len);
 
     if (msg_done) {
-        if (fw_message_process(mqttCtx, mMsgBuf, msg->total_len) != 0) {
-            return MQTT_CODE_ERROR_MALFORMED_DATA;
+        if (mMsgIsCommand) {
+            if (fw_command_process(mMsgBuf, msg->total_len) != 0) {
+                return MQTT_CODE_ERROR_MALFORMED_DATA;
+            }
         }
+        else {
+            if (fw_message_process(mqttCtx, mMsgBuf, msg->total_len) != 0) {
+                return MQTT_CODE_ERROR_MALFORMED_DATA;
+            }
+        }
+
+        mMsgIsCommand = 0;
     }
 
     /* Return negative to terminate publish processing */
@@ -562,8 +667,10 @@ int fwclient_test(MQTTCtx *mqttCtx)
                 goto disconn;
             }
 
+            mSubCommandComplete = 0;
+
             /* Build list of topics */
-            mqttCtx->topics[0].topic_filter = mqttCtx->topic_name;
+            mqttCtx->topics[0].topic_filter = COMMAND_TOPIC_NAME;
             mqttCtx->topics[0].qos = mqttCtx->qos;
 
             /* Subscribe Topic */
@@ -595,6 +702,15 @@ int fwclient_test(MQTTCtx *mqttCtx)
                     topic->qos,
                     topic->return_code);
             }
+
+            if (!mSubCommandComplete) {
+                mSubCommandComplete = 1;
+                mqttCtx->topics[0].topic_filter = mqttCtx->topic_name;
+                mqttCtx->subscribe.packet_id = mqtt_get_packetid();
+                PRINTF("MQTT Subscribing to firmware topic...");
+                return MQTT_CODE_CONTINUE;
+            }
+
             /* Read Loop */
             PRINTF("MQTT Waiting for message...");
         }

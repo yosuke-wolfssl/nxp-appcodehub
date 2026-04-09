@@ -20,10 +20,10 @@ void SystemInit(void)
 
 	/* Disable RAM ECC to maximize available memory for Ethernet and app buffers */
 	SYSCON->ECC_ENABLE_CTRL = 0;
-	SYSCON->NVM_CTRL &= ~SYSCON_NVM_CTRL_DIS_MBECC_ERR_DATA_MASK;
+	SYSCON->NVM_CTRL |= SYSCON_NVM_CTRL_DIS_MBECC_ERR_DATA_MASK;
 
-	/* Enable flash cache (LPCAC) for Ethernet/networking performance */
-	SYSCON->LPCAC_CTRL &= ~SYSCON_LPCAC_CTRL_DIS_LPCAC_MASK;
+	/* Disable flash cache */
+	SYSCON->NVM_CTRL |= SYSCON_NVM_CTRL_DIS_FLASH_CACHE_MASK;
 
     /* Disable aGDET interrupt and reset */
     SPC0->ACTIVE_CFG |= SPC_ACTIVE_CFG_GLITCH_DETECT_DISABLE_MASK;

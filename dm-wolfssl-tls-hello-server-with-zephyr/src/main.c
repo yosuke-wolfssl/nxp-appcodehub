@@ -325,8 +325,16 @@ int main(void)
             printf("Firmware client has Failed!");
             return 1;
         } else {
+            unsigned int irq_key;
+
             printf("Firmware client completed successfully!\n");
+
+            k_sched_lock();
+            irq_key = irq_lock();
+            printf("Triggering wolfBoot update (sched/irq locked)\n");
             wolfBoot_nsc_update_trigger();
+            irq_unlock(irq_key);
+            k_sched_unlock();
         }
 #else
     if (startServer() != 0){
